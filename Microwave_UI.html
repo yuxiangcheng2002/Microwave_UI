@@ -1,0 +1,1469 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <style>
+    body { margin: 0; padding: 0; overflow: hidden; touch-action: none; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
+  </head>
+  <body>
+    <script>
+    // Configuration object for all constants
+    const CONFIG = {
+      aspectRatio: 14 / 9,
+      baseWidth: 1400,
+      colors: {
+        bg: "#181716",
+        primary: 255,
+        dimAlpha: 0.15,
+        glowColors: [
+          [255, 140, 60], [255, 160, 80], [255, 180, 90], [255, 150, 70],
+          [255, 170, 85], [255, 145, 65], [255, 165, 80], [255, 155, 75],
+          [255, 175, 88], [255, 135, 55], [255, 185, 95], [255, 158, 78]
+        ]
+      },
+      segments: {
+        lineSpacing: 8,
+        lineLength: 35, // Wider visual height
+        lineWidth: 1000,
+        blockAreaRatio: 0.2,
+        blocksCount: 10,
+        gapRatio: 0.25,
+        travelMultiplier: 8
+      },
+      speeds: {
+        values: [0.0002, 0.0008, 0.002],
+        labels: ["0.25x", "1x", "2.5x"]
+      },
+      modes: [
+        { mode: 1, maxMinutes: 5, targetValue: 0.2, label: "1" },
+        { mode: 2, maxMinutes: 8, targetValue: 0.25, label: "2" },
+        { mode: 3, maxMinutes: 15, targetValue: 0.333, label: "3" },
+        { mode: 4, maxMinutes: 30, targetValue: 0.333, label: "4" }
+      ]
+    };
+
+    // Global state
+    let state = {
+      allSegments: [],
+      sliderValue: 0,
+      isDragging: false,
+      sliderX: 0, sliderY: 0, sliderWidth: 0, sliderHeight: 0,
+      lastInputX: 0,
+      globalScale: 1,
+      currentSpeed: 1,
+      currentMode: 0, // Default state - no button selected
+      targetTime: 0,
+      animatingToTarget: false,
+      currentMaxMinutes: 10, // Default to 10 minute range
+      isTimerRunning: false,
+      lastFrameTime: 0,
+      timerStartTime: 0,
+      glowTransition: 0,
+      speedButtons: [],
+      modeButtons: [],
+      actionButtons: [],
+      
+      // Startup animation state
+      startupAnimation: {
+        isActive: true,
+        startTime: 0,
+        phase: 0, // 0: intro, 1: time display, 2: segments, 3: buttons, 4: demo, 5: ending
+        lightX: 0,
+        lightY: 0,
+        currentDigit: 0,
+        currentSegment: 0,
+        currentButton: 0,
+        demoProgress: 0
+      },
+      
+      // Blink animation state
+      blinkAnimation: {
+        isActive: false,
+        startTime: 0,
+        blinkCount: 0,
+        maxBlinks: 2,
+        blinkDuration: 300, // milliseconds per blink (on/off cycle)
+        isVisible: true
+      }
+    };
+
+    // Setup and window resize
+    function setup() {
+      let { targetWidth, targetHeight } = calculateCanvasSize();
+      createCanvas(targetWidth, targetHeight);
+      textFont("monospace");
+      generateUI();
+      state.currentMode = 0; // Default state - no button selected
+      state.currentMaxMinutes = 10; // Default to 10 minute range
+      
+      // Initialize startup animation
+      state.startupAnimation.startTime = millis();
+      state.startupAnimation.lightX = width / 2;
+      state.startupAnimation.lightY = height / 2;
+    }
+
+    function windowResized() {
+      let { targetWidth, targetHeight } = calculateCanvasSize();
+      resizeCanvas(targetWidth, targetHeight);
+      generateUI();
+    }
+
+    function calculateCanvasSize() {
+        let targetWidth = windowWidth;
+      let targetHeight = windowWidth / CONFIG.aspectRatio;
+        if (targetHeight > windowHeight) {
+          targetHeight = windowHeight;
+        targetWidth = windowHeight * CONFIG.aspectRatio;
+      }
+      return { targetWidth, targetHeight };
+    }
+
+    // UI Generation
+    function generateUI() {
+      state.globalScale = width / CONFIG.baseWidth;
+      generateSegments();
+      generateButtons();
+    }
+
+    function generateSegments() {
+      state.allSegments = [];
+      const scale = state.globalScale;
+      const cfg = CONFIG.segments;
+      
+      const lineWidth = cfg.lineWidth * scale;
+      const lineY = height * 0.55;
+      const lineX = (width - lineWidth) / 2;
+      const lineSpacing = cfg.lineSpacing * scale;
+      const lineLength = cfg.lineLength * scale;
+
+        let currentDistance = 0;
+      const regularAreaWidth = lineWidth * (1 - cfg.blockAreaRatio);
+      const numLineSegments = Math.floor(regularAreaWidth / lineSpacing);
+      
+      // Generate line segments
+        let x = lineX;
+      for (let i = 0; i < numLineSegments; i++) {
+        state.allSegments.push({
+          x1: x, y1: lineY - lineLength / 2,
+          x2: x, y2: lineY + lineLength / 2,
+            position: currentDistance,
+          isBlock: false
+          });
+          currentDistance += lineSpacing;
+          x += lineSpacing;
+        }
+
+      // Generate blocks
+      const blockStartX = x;
+      const remainingWidth = lineX + lineWidth - blockStartX;
+      const segmentWidth = remainingWidth / cfg.blocksCount;
+      
+      for (let i = 0; i < cfg.blocksCount; i++) {
+        const blockX = blockStartX + i * segmentWidth;
+        const actualBlockWidth = segmentWidth * (1 - cfg.gapRatio);
+        const gapOffset = (segmentWidth * cfg.gapRatio) / 2;
+        
+        const x1 = i === 0 ? blockX : blockX + gapOffset;
+        const x2 = i === 0 ? blockX + actualBlockWidth + gapOffset : blockX + gapOffset + actualBlockWidth;
+        
+        state.allSegments.push({
+          x1, y1: lineY - lineLength / 2,
+          x2, y2: lineY + lineLength / 2,
+              position: currentDistance,
+          isBlock: true
+        });
+        currentDistance += segmentWidth * cfg.travelMultiplier;
+      }
+      
+      // Set slider area
+      state.sliderWidth = lineWidth;
+      state.sliderHeight = lineLength + 80 * scale; // Wider slider for easier interaction
+      state.sliderX = lineX;
+      state.sliderY = lineY;
+    }
+
+    function generateButtons() {
+      const scale = state.globalScale;
+      
+      // Speed buttons
+      state.speedButtons = [];
+      const speedBtnWidth = 65 * scale;
+      const speedBtnHeight = 35 * scale;
+      const speedBtnSpacing = 10 * scale;
+      const speedBtnX = 20 * scale;
+      const speedBtnY = 45 * scale;
+
+        for (let i = 0; i < 3; i++) {
+        state.speedButtons.push({
+          x: speedBtnX + i * (speedBtnWidth + speedBtnSpacing),
+          y: speedBtnY,
+          width: speedBtnWidth,
+          height: speedBtnHeight,
+          label: CONFIG.speeds.labels[i],
+          speedIndex: i
+        });
+      }
+      
+      // Mode buttons
+      state.modeButtons = [];
+      const modeBtnWidth = 45 * scale;
+      const modeBtnHeight = 70 * scale;
+      const modeSpacing = 10 * scale;
+      const displayX = width * 0.415;
+      const displayY = height * 0.35;
+      const displayHeight = width * 0.043;
+      const modeBtnY = displayY + displayHeight * 0.5 - modeBtnHeight / 2;
+      
+      const timeDisplayWidth = width * 0.186;
+      const timeDisplayCenter = displayX + timeDisplayWidth / 2;
+      const gapFromDisplay = 350 * scale;
+      
+      // Create mode buttons
+      const leftCenter = timeDisplayCenter - timeDisplayWidth / 2 - gapFromDisplay;
+      const rightCenter = timeDisplayCenter + timeDisplayWidth / 2 + gapFromDisplay;
+      
+      CONFIG.modes.forEach((mode, i) => {
+        const isLeft = i < 2;
+        const center = isLeft ? leftCenter : rightCenter;
+        const offset = i % 2 === 0 ? -modeBtnWidth - modeSpacing / 2 : modeSpacing / 2;
+        
+        state.modeButtons.push({
+          x: center + offset,
+          y: modeBtnY,
+          width: modeBtnWidth,
+          height: modeBtnHeight,
+          ...mode
+        });
+      });
+      
+      // Action buttons
+      state.actionButtons = [];
+      const actionBtnWidth = 80 * scale;
+      const actionBtnHeight = 50 * scale;
+      const actionBtnY = modeBtnY + modeBtnHeight / 2 - actionBtnHeight / 2;
+      
+      state.actionButtons.push({
+        x: leftCenter + modeBtnWidth + modeSpacing + 80 * scale,
+        y: actionBtnY,
+        width: actionBtnWidth,
+        height: actionBtnHeight,
+          label: "取消",
+        action: "cancel"
+      });
+      
+      state.actionButtons.push({
+        x: rightCenter - modeBtnWidth - modeSpacing - actionBtnWidth - 80 * scale,
+        y: actionBtnY,
+        width: actionBtnWidth,
+        height: actionBtnHeight,
+          label: "开始",
+        action: "start"
+        });
+      }
+
+    // Main draw loop
+      function draw() {
+      background(CONFIG.colors.bg);
+      
+      // Handle startup animation
+      if (state.startupAnimation.isActive) {
+        updateHardwareStartupAnimation();
+        drawWithStartupOverrides();
+        } else {
+        updateAnimations();
+        updateBlinkAnimation();
+        updateTimer();
+
+        if (state.glowTransition > 0) {
+          drawBottomGlow();
+        }
+
+        drawSegments();
+        drawTimeDisplay();
+        drawButtons();
+        drawInstructions();
+      }
+    }
+
+    // Hardware Startup Animation: All Lit → Push-to-6min → Bell curve left then right → Push-back
+    function updateHardwareStartupAnimation() {
+      const anim = state.startupAnimation;
+      const elapsed = millis() - anim.startTime;
+      const totalDuration = 8000; // 8 seconds total (removed blink phase)
+      
+      if (elapsed >= totalDuration) {
+        anim.isActive = false;
+        // Ensure clean transition to normal state
+        state.glowTransition = 0;
+        state.sliderValue = 0;
+        return;
+      }
+      
+      // Four phases: light up all, Push-to-6min, bell curve movement, then Push-back to 0
+      if (elapsed < 500) {
+        anim.phase = 0; // Light up all segments - brief flash
+      } else if (elapsed < 2500) {
+        anim.phase = 1; // Push-to-6min from left with breathing (separate sequence)
+        anim.pushToMiddleProgress = (elapsed - 500) / (2500 - 500);
+      } else if (elapsed < 6000) {
+        anim.phase = 2; // Bell curve movement: left then right (3.5 seconds)
+        anim.bellCurveProgress = (elapsed - 2500) / (6000 - 2500);
+      } else {
+        anim.phase = 3; // Push-back to 0 (separate sequence)
+        anim.pushBackProgress = (elapsed - 6000) / (totalDuration - 6000);
+        
+        // Trigger blink animation when push-back is almost complete
+        if (anim.pushBackProgress >= 0.95 && !state.blinkAnimation.isActive) {
+          state.blinkAnimation.isActive = true;
+          state.blinkAnimation.startTime = millis();
+          state.blinkAnimation.blinkCount = 0;
+          state.blinkAnimation.isVisible = true;
+        }
+      }
+    }
+
+    function drawWithStartupOverrides() {
+      const anim = state.startupAnimation;
+      const elapsed = millis() - anim.startTime;
+      const totalDuration = 4000;
+      
+      // Draw startup time display that changes from 00:00 to 88:88
+      drawStartupTimeDisplay(elapsed / totalDuration);
+      
+            if (anim.phase === 0) {
+        // Phase 0: All segments fully lit
+        drawAllSegmentsLit();
+      } else if (anim.phase === 1) {
+        // Phase 1: Push-to-6min from left with breathing
+        const progress = anim.pushToMiddleProgress;
+        drawPushToMiddleAnimation(progress);
+      } else if (anim.phase === 2) {
+        // Phase 2: Bell curve movement (left then right)
+        const progress = anim.bellCurveProgress;
+        drawBellCurveMovement(progress);
+      } else {
+        // Phase 3: Push-back to 0
+        const progress = anim.pushBackProgress;
+        drawPushBackAnimation(progress);
+      }
+      
+      drawButtons();
+      drawInstructions();
+    }
+
+    function drawStartupTimeDisplay(overallProgress) {
+      const anim = state.startupAnimation;
+      let minutes = 0;
+      let seconds = 0;
+      
+      if (anim.phase === 0) {
+        // Phase 0 (all lit): show 88:88
+        minutes = 88;
+        seconds = 88;
+        
+      } else if (anim.phase === 1) {
+        // Phase 1 (Push-to-6min): separate sequence - left to 6 minutes
+        const progress = anim.pushToMiddleProgress;
+        
+        // Show time progressing from 00:00 to 06:00
+        const totalMinutes = 6 * progress; // 0 to 6 minutes
+        minutes = Math.floor(totalMinutes);
+        seconds = Math.floor((totalMinutes - minutes) * 60);
+        
+      } else if (anim.phase === 2) {
+        // Phase 2 (Bell curve movement): show time based on position
+        const progress = anim.bellCurveProgress;
+        
+        // Show time that corresponds to the animated position
+        const currentPosition = calculateBellCurvePosition(progress);
+        const totalMinutes = (currentPosition / state.allSegments.length) * 10; // 10 minute range
+        minutes = Math.floor(totalMinutes);
+        seconds = Math.floor((totalMinutes - minutes) * 60);
+        
+      } else if (anim.phase === 3) {
+        // Phase 3 (Push-back): separate sequence from 88:88 back to 00:00
+        const pushBackProgress = anim.pushBackProgress;
+        
+        // Independent sequence: 88:88 → 00:00
+        minutes = Math.floor(88 * (1 - pushBackProgress));
+        seconds = Math.floor(88 * (1 - pushBackProgress));
+      }
+      
+      // Draw the time display
+      const displayX = width * 0.415;
+      const displayY = height * 0.35;
+      
+      const minTens = Math.floor(minutes / 10);
+      const minOnes = minutes % 10;
+      const secTens = Math.floor(seconds / 10);
+      const secOnes = Math.floor(seconds) % 10;
+      
+      draw7SegmentSimple(minTens, displayX, displayY, 1.0);
+      draw7SegmentSimple(minOnes, displayX + width * 0.043, displayY, 1.0);
+      draw7SegmentSimple(secTens, displayX + width * 0.1, displayY, 1.0);
+      draw7SegmentSimple(secOnes, displayX + width * 0.143, displayY, 1.0);
+      
+      // Draw the colon
+      fill(255, 255);
+      noStroke();
+      const colonSize = width * 0.004;
+      ellipse(displayX + width * 0.086, displayY + height * 0.022, colonSize, colonSize);
+      ellipse(displayX + width * 0.086, displayY + height * 0.044, colonSize, colonSize);
+    }
+
+    
+
+    function drawAllSegmentsLit() {
+      // Light up all segments at full brightness
+      strokeWeight(3);
+      
+      state.allSegments.forEach((segment) => {
+        stroke(255, 255);
+          if (segment.isBlock) {
+          fill(255, 255);
+            noStroke();
+          rect(segment.x1, segment.y1, segment.x2 - segment.x1, segment.y2 - segment.y1);
+          } else {
+            line(segment.x1, segment.y1, segment.x2, segment.y2);
+          }
+      });
+    }
+
+    
+
+    function drawPushToMiddleAnimation(progress) {
+      // Push-to-Middle Animation: Left to 6 minutes (60% of 10min range)
+      const totalSegments = state.allSegments.length;
+      const targetPoint = totalSegments * 0.6; // 60% for 6 minutes in 10min range
+      
+      // Calculate how far from left the lit area extends
+      const easedProgress = 0.5 * (1 - Math.cos(progress * Math.PI)); // Smooth ease-in-out
+      const cutoffPoint = easedProgress * targetPoint; // Goes to 60% (6 minutes)
+      
+      // Find the first segment to the right of the current animation position
+      let firstRightSegmentIndex = -1;
+      for (let i = 0; i < state.allSegments.length; i++) {
+        if (i >= Math.floor(cutoffPoint)) {
+          firstRightSegmentIndex = i;
+          break;
+        }
+      }
+      
+      // Special case: if we're very close to 0, ensure breathing applies to segment 0
+      if (cutoffPoint < 1 && cutoffPoint > 0) {
+        firstRightSegmentIndex = 0;
+      }
+      
+      strokeWeight(3);
+      
+      state.allSegments.forEach((segment, i) => {
+        let opacity;
+        
+        if (i < cutoffPoint) {
+          // Lit segments from left
+          opacity = 255;
+        } else if (i === firstRightSegmentIndex) {
+          // Breathing segment - use dim opacity (will be enhanced by breathing effect)
+          opacity = 255 * CONFIG.colors.dimAlpha;
+        } else {
+          // All other segments to the right - completely dim, no fading
+          opacity = 255 * CONFIG.colors.dimAlpha;
+        }
+        
+        stroke(255, opacity);
+        if (segment.isBlock) {
+          fill(255, opacity);
+          noStroke();
+          rect(segment.x1, segment.y1, segment.x2 - segment.x1, segment.y2 - segment.y1);
+          } else {
+          line(segment.x1, segment.y1, segment.x2, segment.y2);
+        }
+        
+        // Apply full breathing effect to the first segment on the right of current position
+        if (i === firstRightSegmentIndex) {
+          // Apply breathing effect to the main halo
+          const time = millis() * 0.002;
+          const breathingIntensity = (Math.sin(time) + 1) / 2; // 0 to 1
+          const breathingMultiplier = 0.7 + breathingIntensity * 0.6; // 0.7 to 1.3
+          
+          drawSegmentGlow(segment, opacity * breathingMultiplier);
+          drawBreathingGlow(segment);
+        }
+      });
+    }
+
+        function calculateBellCurvePosition(progress) {
+      // Bell curve movement: start at 60% (6min), dip left, then go to 100% (right end)
+      const totalSegments = state.allSegments.length;
+      const startPoint = totalSegments * 0.6; // Start at 6 minutes (60%)
+      const endPoint = totalSegments; // End at rightmost (100%)
+      
+      if (progress < 0.4) {
+        // First 40% of time: dip to the left (only the left half of bell curve)
+        const dipProgress = progress / 0.4; // 0 to 1
+        // Use only left half of bell curve (from 0 to peak at 0.5)
+        const bellInput = dipProgress * 0.5; // 0 to 0.5
+        const bellCurve = Math.exp(-Math.pow((bellInput - 0.5) * 6, 2)); // Peak at bellInput = 0.5
+        const leftDip = startPoint - (startPoint * 0.35 * bellCurve); // Dip left by 35% of start position
+        return Math.max(0, leftDip);
+        } else {
+        // Remaining 60% of time: move from maximum dip position to right end
+        const rightProgress = (progress - 0.4) / 0.6; // 0 to 1
+        const easedProgress = 1 - Math.pow(1 - rightProgress, 3); // Ease-out
+        
+        // Maximum dip position (when bellInput = 0.5, bellCurve = 1)
+        const maxDipPosition = startPoint - (startPoint * 0.35 * 1); // Maximum dip
+        
+        return maxDipPosition + (endPoint - maxDipPosition) * easedProgress;
+      }
+    }
+
+    function drawBellCurveMovement(progress) {
+      // Bell curve movement animation
+      const totalSegments = state.allSegments.length;
+      const currentPosition = calculateBellCurvePosition(progress);
+      
+      // Find the first segment to the right of the current animation position
+      let firstRightSegmentIndex = -1;
+      for (let i = 0; i < state.allSegments.length; i++) {
+        if (i >= Math.floor(currentPosition)) {
+          firstRightSegmentIndex = i;
+          break;
+        }
+      }
+      
+      // Special case: if we're very close to 0, ensure breathing applies to segment 0
+      if (currentPosition < 1 && currentPosition > 0) {
+        firstRightSegmentIndex = 0;
+      }
+      
+      strokeWeight(3);
+      
+      state.allSegments.forEach((segment, i) => {
+          let opacity;
+
+        if (i < currentPosition) {
+          // Lit segments up to current position
+          opacity = 255;
+        } else if (i === firstRightSegmentIndex) {
+          // Breathing segment - use dim opacity (will be enhanced by breathing effect)
+          opacity = 255 * CONFIG.colors.dimAlpha;
+            } else {
+          // All other segments to the right - completely dim, no fading
+          opacity = 255 * CONFIG.colors.dimAlpha;
+        }
+        
+        stroke(255, opacity);
+        if (segment.isBlock) {
+          fill(255, opacity);
+          noStroke();
+          rect(segment.x1, segment.y1, segment.x2 - segment.x1, segment.y2 - segment.y1);
+          } else {
+          line(segment.x1, segment.y1, segment.x2, segment.y2);
+        }
+        
+        // Apply full breathing effect to the first segment on the right of current position
+        if (i === firstRightSegmentIndex) {
+          // Apply breathing effect to the main halo
+          const time = millis() * 0.002;
+          const breathingIntensity = (Math.sin(time) + 1) / 2; // 0 to 1
+          const breathingMultiplier = 0.7 + breathingIntensity * 0.6; // 0.7 to 1.3
+          
+          drawSegmentGlow(segment, opacity * breathingMultiplier);
+          drawBreathingGlow(segment);
+        }
+      });
+    }
+
+    
+
+      function drawPushBackAnimation(progress) {
+      // Push-back Animation: Separate sequence starting from full, pushing back to 0
+      const totalSegments = state.allSegments.length;
+      
+      // Use ease-out easing: starts fast, then slows down dramatically
+      const easedProgress = 1 - Math.pow(1 - progress, 4);
+      
+      // Start from full (all segments lit) and push back to 0
+      // Ensure it can reach exactly 0 at the end
+      const cutoffPoint = Math.max(0, (1 - easedProgress) * totalSegments);
+      
+      // Find the first segment to the right of the current animation position
+      let firstRightSegmentIndex = -1;
+      for (let i = 0; i < state.allSegments.length; i++) {
+        if (i >= Math.floor(cutoffPoint)) {
+          firstRightSegmentIndex = i;
+          break;
+        }
+      }
+      
+      // Special case: if we're very close to 0, ensure breathing applies to segment 0
+      if (cutoffPoint < 1 && cutoffPoint > 0) {
+        firstRightSegmentIndex = 0;
+      }
+      
+      // Remove all glow effects from startup animation - they cause the sudden appearance
+      state.glowTransition = 0;
+      
+      strokeWeight(3);
+      
+      state.allSegments.forEach((segment, i) => {
+        let opacity;
+        
+        if (i < cutoffPoint) {
+          // Still lit segments
+          opacity = 255;
+        } else if (i === firstRightSegmentIndex) {
+          // Breathing segment - use dim opacity (will be enhanced by breathing effect)
+          opacity = 255 * CONFIG.colors.dimAlpha;
+            } else {
+          // All other segments to the right - completely dim, no fading
+          opacity = 255 * CONFIG.colors.dimAlpha;
+          }
+
+          stroke(255, opacity);
+          if (segment.isBlock) {
+            fill(255, opacity);
+            noStroke();
+          rect(segment.x1, segment.y1, segment.x2 - segment.x1, segment.y2 - segment.y1);
+          } else {
+            line(segment.x1, segment.y1, segment.x2, segment.y2);
+        }
+        
+        // Apply full breathing effect to the first segment on the right of current position
+        if (i === firstRightSegmentIndex) {
+          // Apply breathing effect to the main halo
+          const time = millis() * 0.002;
+          const breathingIntensity = (Math.sin(time) + 1) / 2; // 0 to 1
+          const breathingMultiplier = 0.7 + breathingIntensity * 0.6; // 0.7 to 1.3
+          
+          drawSegmentGlow(segment, opacity * breathingMultiplier);
+          drawBreathingGlow(segment);
+        }
+      });
+    }
+
+    function drawBreathingGlow(segment) {
+      // Breathing glow effect for the current brightest segment
+      const time = millis() * 0.002; // Slow breathing rhythm
+      const breathingIntensity = (Math.sin(time) + 1) / 2; // 0 to 1
+      const glowIntensity = 20 + breathingIntensity * 40; // Varies from 20 to 60
+      
+      push();
+      drawingContext.globalCompositeOperation = "screen";
+      
+      if (segment.isBlock) {
+        // Block breathing glow
+        for (let i = 0; i < 3; i++) {
+          const expansion = (i + 1) * 6 * (1 + breathingIntensity * 0.8);
+          const opacity = glowIntensity * (1 - i * 0.3);
+          
+          fill(255, 220, 150, opacity);
+            noStroke();
+            rect(
+            segment.x1 - expansion,
+            segment.y1 - expansion,
+            segment.x2 - segment.x1 + expansion * 2,
+            segment.y2 - segment.y1 + expansion * 2
+          );
+        }
+          } else {
+        // Line breathing glow
+        for (let i = 0; i < 3; i++) {
+          const lineWidth = 3 + (i + 1) * 3 * (1 + breathingIntensity * 0.8);
+          const opacity = glowIntensity * (1 - i * 0.3);
+          
+          stroke(255, 220, 150, opacity);
+          strokeWeight(lineWidth);
+          line(segment.x1, segment.y1, segment.x2, segment.y2);
+        }
+      }
+      
+      pop();
+    }
+
+    function drawBreathingGlowWithBlink(segment, blinkOpacity) {
+      // Breathing glow effect for the current brightest segment with blink support
+      const time = millis() * 0.002; // Slow breathing rhythm
+      const breathingIntensity = (Math.sin(time) + 1) / 2; // 0 to 1
+      const glowIntensity = (20 + breathingIntensity * 40) * blinkOpacity; // Varies from 20 to 60, modulated by blink
+      
+      push();
+      drawingContext.globalCompositeOperation = "screen";
+      
+      if (segment.isBlock) {
+        // Block breathing glow
+        for (let i = 0; i < 3; i++) {
+          const expansion = (i + 1) * 6 * (1 + breathingIntensity * 0.8);
+          const opacity = glowIntensity * (1 - i * 0.3);
+          
+          fill(255, 220, 150, opacity);
+          noStroke();
+          rect(
+            segment.x1 - expansion,
+            segment.y1 - expansion,
+            segment.x2 - segment.x1 + expansion * 2,
+            segment.y2 - segment.y1 + expansion * 2
+          );
+        }
+      } else {
+        // Line breathing glow
+        for (let i = 0; i < 3; i++) {
+          const lineWidth = 3 + (i + 1) * 3 * (1 + breathingIntensity * 0.8);
+          const opacity = glowIntensity * (1 - i * 0.3);
+          
+          stroke(255, 220, 150, opacity);
+          strokeWeight(lineWidth);
+          line(segment.x1, segment.y1, segment.x2, segment.y2);
+        }
+      }
+      
+      pop();
+    }
+
+    function updateAnimations() {
+      // Glow transition
+      if (state.isTimerRunning) {
+        state.glowTransition = min(state.glowTransition + 0.04, 1);
+      } else {
+        state.glowTransition = max(state.glowTransition - 0.025, 0);
+      }
+      
+      // Mode animation
+      if (state.animatingToTarget) {
+        const diff = state.targetTime - state.sliderValue;
+        if (Math.abs(diff) < 0.005) {
+          state.sliderValue = state.targetTime;
+          state.animatingToTarget = false;
+        } else {
+          state.sliderValue += diff * 0.1;
+        }
+      }
+    }
+
+    function updateBlinkAnimation() {
+      if (!state.blinkAnimation.isActive) return;
+      
+      const elapsed = millis() - state.blinkAnimation.startTime;
+      const cycleDuration = state.blinkAnimation.blinkDuration;
+      const currentCycle = Math.floor(elapsed / cycleDuration);
+      
+      // Toggle visibility every half cycle (blink on/off)
+      state.blinkAnimation.isVisible = (elapsed % cycleDuration) < (cycleDuration / 2);
+      
+      // Count complete blinks (both on and off = 1 blink)
+      const completeBlinks = Math.floor(elapsed / cycleDuration);
+      
+      if (completeBlinks >= state.blinkAnimation.maxBlinks * 2) {
+        // Animation complete after 2 full blinks (4 half cycles)
+        state.blinkAnimation.isActive = false;
+        state.blinkAnimation.isVisible = true; // Ensure elements stay visible
+      }
+    }
+
+    function updateTimer() {
+      if (state.isTimerRunning && state.sliderValue > 0) {
+        const currentTime = millis();
+        if (state.lastFrameTime === 0) {
+          state.lastFrameTime = currentTime;
+        }
+        const deltaTime = currentTime - state.lastFrameTime;
+        state.lastFrameTime = currentTime;
+        
+        const decreaseAmount = deltaTime / (state.currentMaxMinutes * 60000);
+        state.sliderValue -= decreaseAmount;
+        
+        if (state.sliderValue <= 0) {
+          state.sliderValue = 0;
+          state.isTimerRunning = false;
+          state.lastFrameTime = 0;
+        }
+      } else if (!state.isTimerRunning) {
+        state.lastFrameTime = 0;
+      }
+    }
+
+    function drawSegments() {
+      const trailLength = 0.3;
+      const maxPosition = state.allSegments[state.allSegments.length - 1].position;
+      const currentPos = state.sliderValue * maxPosition;
+      
+      // Calculate blink opacity multiplier for segments
+      const segmentBlinkOpacity = (state.blinkAnimation.isActive && !state.blinkAnimation.isVisible) ? 0.1 : 1.0;
+      
+      // Breathing effect will be applied to the brightest segment
+      
+      strokeWeight(3); // Thicker lines for better visibility
+      let brightestSegment = null;
+      let brightestOpacity = 0;
+      let brightestSegmentIndex = -1;
+      
+      // First pass: find the brightest segment
+      state.allSegments.forEach((segment, i) => {
+        let opacity = calculateSegmentOpacity(segment, i, currentPos, maxPosition, trailLength);
+        
+        if (opacity > brightestOpacity) {
+          brightestOpacity = opacity;
+          brightestSegment = segment;
+          brightestSegmentIndex = i;
+        }
+      });
+      
+      // Second pass: draw segments with blink effect applied to brightest
+      state.allSegments.forEach((segment, i) => {
+        let opacity = calculateSegmentOpacity(segment, i, currentPos, maxPosition, trailLength);
+        
+        // Apply blink effect to the segment opacity if it's the brightest segment and it's actually lit
+        let finalOpacity = opacity;
+        if (i === brightestSegmentIndex && opacity > 255 * CONFIG.colors.dimAlpha) {
+          finalOpacity = opacity * segmentBlinkOpacity;
+        }
+        
+        // Draw segments normally without fading
+        stroke(255, finalOpacity);
+        if (segment.isBlock) {
+          fill(255, finalOpacity);
+          noStroke();
+          rect(segment.x1, segment.y1, segment.x2 - segment.x1, segment.y2 - segment.y1);
+        } else {
+          line(segment.x1, segment.y1, segment.x2, segment.y2);
+        }
+        
+        // Add fading glow effect for all illuminated segments
+        if (opacity > 255 * CONFIG.colors.dimAlpha) {
+          const glowIntensity = (opacity - 255 * CONFIG.colors.dimAlpha) / (255 - 255 * CONFIG.colors.dimAlpha);
+          const glowOpacityMultiplier = (i === brightestSegmentIndex) ? segmentBlinkOpacity : 1.0;
+          
+          if (segment.isBlock) {
+            drawGlowBlockWithFading(segment, 20 * glowIntensity * glowOpacityMultiplier, 2);
+          } else {
+            drawGlowLineWithFading(segment, 30 * glowIntensity * glowOpacityMultiplier, 2);
+          }
+        }
+        
+        // No breathing effect here - will be added to the brightest segment later
+      });
+      
+      if (brightestSegment && brightestOpacity > 255 * CONFIG.colors.dimAlpha) {
+        // Apply breathing effect to the main halo as well
+        const time = millis() * 0.002;
+        const breathingIntensity = (Math.sin(time) + 1) / 2; // 0 to 1
+        const breathingMultiplier = 0.7 + breathingIntensity * 0.6; // 0.7 to 1.3
+        
+        drawSegmentGlow(brightestSegment, brightestOpacity * breathingMultiplier * segmentBlinkOpacity);
+        // Add additional breathing effect to the brightest/current segment
+        drawBreathingGlowWithBlink(brightestSegment, segmentBlinkOpacity);
+      }
+    }
+
+
+
+    function calculateSegmentOpacity(segment, index, currentPos, maxPosition, trailLength) {
+      if (state.sliderValue === 0 && index === 0) return 255;
+      
+      if (segment.position <= currentPos) {
+        const distanceBehind = currentPos - segment.position;
+        const normalizedDistance = distanceBehind / (trailLength * maxPosition);
+        return normalizedDistance <= 1 
+          ? lerp(255, 255 * CONFIG.colors.dimAlpha, normalizedDistance)
+          : 255 * CONFIG.colors.dimAlpha;
+      }
+      
+      const opacity = 255 * CONFIG.colors.dimAlpha;
+      return index === 0 ? max(opacity, 255 * 0.25) : opacity;
+    }
+
+    function drawSegmentGlow(segment, opacity) {
+      const lightIntensity = (opacity - 255 * CONFIG.colors.dimAlpha) / (255 - 255 * CONFIG.colors.dimAlpha);
+      const centerX = (segment.x1 + segment.x2) / 2;
+      const centerY = (segment.y1 + segment.y2) / 2;
+      
+      // Light layers
+      const lightLayers = [
+        { radius: 80, opacity: 3 }, { radius: 60, opacity: 6 },
+        { radius: 40, opacity: 10 }, { radius: 25, opacity: 15 },
+        { radius: 15, opacity: 25 }
+      ];
+      
+      noStroke();
+      lightLayers.forEach(layer => {
+        fill(255, layer.opacity * lightIntensity);
+        ellipse(centerX, centerY, layer.radius * 2);
+      });
+      
+      // Glow layers
+      const glowLayers = [
+        { weight: 8, opacity: 15 }, { weight: 6, opacity: 25 },
+        { weight: 4, opacity: 40 }, { weight: 2, opacity: 75 }
+      ];
+      
+      glowLayers.forEach(layer => {
+        stroke(255, layer.opacity * lightIntensity);
+        strokeWeight(layer.weight);
+        
+        if (segment.isBlock) {
+          // Use faded glow for blocks too
+          drawGlowBlockWithFading(segment, layer.opacity * lightIntensity, layer.weight);
+          } else {
+          // Use faded glow for line segments too
+          drawGlowLineWithFading(segment, layer.opacity * lightIntensity, layer.weight);
+        }
+      });
+    }
+
+    function drawGlowLineWithFading(segment, glowOpacity, weight) {
+      const height = segment.y2 - segment.y1;
+      const centerY = (segment.y1 + segment.y2) / 2;
+      const fadeDistance = height * 0.5; // More dramatic fading
+      const steps = 10;
+      
+      strokeWeight(weight);
+      
+      for (let i = 0; i < steps; i++) {
+        const y = segment.y1 + (height * i) / (steps - 1);
+        const distanceFromCenter = Math.abs(y - centerY);
+        const maxDistance = height / 2;
+        
+        let fadeMultiplier = 1;
+        if (distanceFromCenter > maxDistance - fadeDistance) {
+          const fadeProgress = (distanceFromCenter - (maxDistance - fadeDistance)) / fadeDistance;
+          fadeMultiplier = 1 - Math.pow(fadeProgress, 0.8); // More dramatic fade curve
+        }
+        
+        const finalOpacity = glowOpacity * fadeMultiplier;
+        stroke(255, finalOpacity);
+        
+        const segmentHeight = height / steps;
+        line(segment.x1, y - segmentHeight / 2, segment.x1, y + segmentHeight / 2);
+      }
+    }
+
+    function drawGlowBlockWithFading(segment, glowOpacity, weight) {
+      const height = segment.y2 - segment.y1;
+      const centerY = (segment.y1 + segment.y2) / 2;
+      const fadeDistance = height * 0.5; // More dramatic fading
+      const steps = 15;
+      const blockWidth = segment.x2 - segment.x1 + weight;
+      
+      noFill();
+      strokeWeight(weight);
+      
+      for (let i = 0; i < steps; i++) {
+        const y = segment.y1 + (height * i) / (steps - 1);
+        const distanceFromCenter = Math.abs(y - centerY);
+        const maxDistance = height / 2;
+        
+        let fadeMultiplier = 1;
+        if (distanceFromCenter > maxDistance - fadeDistance) {
+          const fadeProgress = (distanceFromCenter - (maxDistance - fadeDistance)) / fadeDistance;
+          fadeMultiplier = 1 - Math.pow(fadeProgress, 0.8); // More dramatic fade curve
+        }
+        
+        const finalOpacity = glowOpacity * fadeMultiplier;
+        stroke(255, finalOpacity);
+        
+        const rectHeight = height / steps;
+        rect(
+          segment.x1 - weight / 2,
+          y - rectHeight / 2,
+          blockWidth,
+          rectHeight
+        );
+      }
+    }
+
+    function drawTimeDisplay(opacityMultiplier = 1) {
+      const time = calculateTime();
+      const displayX = width * 0.415;
+      const displayY = height * 0.35;
+      
+      // Draw digits
+      draw7SegmentSimple(Math.floor(time.minutes / 10), displayX, displayY, opacityMultiplier);
+      draw7SegmentSimple(time.minutes % 10, displayX + width * 0.043, displayY, opacityMultiplier);
+      draw7SegmentSimple(Math.floor(time.seconds / 10), displayX + width * 0.1, displayY, opacityMultiplier);
+      draw7SegmentSimple(time.seconds % 10, displayX + width * 0.143, displayY, opacityMultiplier);
+      
+      // Draw colon
+      const baseOpacity = state.isTimerRunning && millis() % 1000 < 500 ? 100 : 255;
+      const colonOpacity = baseOpacity * opacityMultiplier;
+      fill(255, colonOpacity);
+        noStroke();
+      const colonSize = width * 0.004;
+      ellipse(displayX + width * 0.086, displayY + height * 0.022, colonSize, colonSize);
+      ellipse(displayX + width * 0.086, displayY + height * 0.044, colonSize, colonSize);
+    }
+
+
+
+    function drawButtonWithOpacity(btn, isActive, opacityMultiplier, drawContent, isDisabled = false) {
+      if (isDisabled) {
+        fill(255, 255 * 0.05 * opacityMultiplier);
+        stroke(255, 255 * 0.2 * opacityMultiplier);
+              strokeWeight(1);
+      } else if (isActive) {
+        fill(255, 255 * opacityMultiplier);
+        stroke(255, 255 * opacityMultiplier);
+        strokeWeight(2);
+            } else {
+        fill(255, 255 * 0.15 * opacityMultiplier);
+        stroke(255, 255 * 0.5 * opacityMultiplier);
+              strokeWeight(1);
+            }
+
+      rect(btn.x, btn.y, btn.width, btn.height, 6);
+      
+            noStroke();
+            textAlign(CENTER, CENTER);
+      drawContent();
+    }
+
+    function drawButtonWithBlink(btn, isActive, blinkOpacity, drawContent, isDisabled = false) {
+      const isHovered = mouseX >= btn.x && mouseX <= btn.x + btn.width &&
+                       mouseY >= btn.y && mouseY <= btn.y + btn.height;
+      
+      if (isDisabled) {
+        fill(255, 255 * 0.05 * blinkOpacity);
+        stroke(255, 255 * 0.2 * blinkOpacity);
+        strokeWeight(1);
+      } else if (isActive) {
+        fill(255, 255 * blinkOpacity);
+        stroke(255, 255 * blinkOpacity);
+        strokeWeight(2);
+      } else if (isHovered) {
+        fill(255, 255 * 0.3 * blinkOpacity);
+        stroke(255, 255 * 0.8 * blinkOpacity);
+        strokeWeight(1);
+      } else {
+        fill(255, 255 * 0.15 * blinkOpacity);
+        stroke(255, 255 * 0.5 * blinkOpacity);
+        strokeWeight(1);
+      }
+      
+      rect(btn.x, btn.y, btn.width, btn.height, 6);
+
+      fill((isActive && !isDisabled ? 0 : 255) * blinkOpacity);
+      noStroke();
+      textAlign(CENTER, CENTER);
+      drawContent();
+    }
+
+    function calculateTime() {
+      const maxPosition = state.allSegments[state.allSegments.length - 1].position;
+      const blockStartPosition = state.allSegments.find(s => s.isBlock)?.position || maxPosition * 0.8;
+      const currentPathPosition = state.sliderValue * maxPosition;
+      
+      let minutes, seconds;
+      
+      if (state.currentMode === 0 && state.currentMaxMinutes === 10) {
+        // Default state: Lines 0-5:00, Blocks 5:00-10:00 (xx:00 or xx:30 only)
+        if (currentPathPosition < blockStartPosition) {
+          // Line segment area: 0:00 to 5:00
+          const lineSegmentProgress = currentPathPosition / blockStartPosition;
+          const totalMinutesInLineArea = lineSegmentProgress * 5; // 0 to 5 minutes
+          minutes = Math.floor(totalMinutesInLineArea);
+          seconds = Math.floor((totalMinutesInLineArea - minutes) * 60);
+            } else {
+          // Block area: 5:00 to 10:00, only xx:00 or xx:30
+          const blockAreaLength = maxPosition - blockStartPosition;
+          const blockProgress = (currentPathPosition - blockStartPosition) / blockAreaLength;
+          const totalMinutesInBlockArea = 5 + blockProgress * 5; // 5 to 10 minutes
+          
+          // Round to nearest 0.5 (for :00 or :30) and add 5 minute base
+          const roundedMinutes = Math.round(totalMinutesInBlockArea * 2) / 2;
+          minutes = Math.floor(roundedMinutes);
+          seconds = (roundedMinutes % 1) * 60;
+          
+          if (minutes >= 10) {
+            minutes = 10;
+            seconds = 0;
+          }
+        }
+      } else {
+        // Other modes: use original logic
+        if (currentPathPosition < blockStartPosition) {
+          const lineSegmentProgress = currentPathPosition / blockStartPosition;
+          const totalMinutesInLineArea = lineSegmentProgress * 19 * (state.currentMaxMinutes / 30);
+          minutes = Math.floor(totalMinutesInLineArea);
+          seconds = Math.floor((totalMinutesInLineArea - minutes) * 60);
+        } else {
+          const blockAreaLength = maxPosition - blockStartPosition;
+          const blockProgress = (currentPathPosition - blockStartPosition) / blockAreaLength;
+          const totalMinutesInBlockArea = 19 * (state.currentMaxMinutes / 30) + 
+                                         blockProgress * 11 * (state.currentMaxMinutes / 30);
+          
+          if (state.currentMaxMinutes >= 15) {
+            const roundedMinutes = Math.round(totalMinutesInBlockArea * 2) / 2;
+            minutes = Math.floor(roundedMinutes);
+            seconds = (roundedMinutes % 1) * 60;
+          } else {
+            minutes = Math.floor(totalMinutesInBlockArea);
+            seconds = Math.floor((totalMinutesInBlockArea - minutes) * 60);
+          }
+          
+          if (minutes >= state.currentMaxMinutes) {
+            minutes = state.currentMaxMinutes;
+            seconds = 0;
+          }
+        }
+      }
+      
+      return { minutes, seconds };
+    }
+
+    function drawButtons() {
+      // Calculate blink opacity multiplier
+      const blinkOpacity = (state.blinkAnimation.isActive && !state.blinkAnimation.isVisible) ? 0.1 : 1.0;
+      
+      // Speed buttons
+      fill(255, 255 * 0.6);
+      noStroke();
+      textAlign(LEFT, BOTTOM);
+      textSize(14 * state.globalScale);
+      if (state.speedButtons.length > 0) {
+        text("SWIPE SPEED", state.speedButtons[0].x, state.speedButtons[0].y - 7 * state.globalScale);
+      }
+      
+      state.speedButtons.forEach((btn, i) => {
+        drawButton(btn, i === state.currentSpeed, () => text(btn.label, btn.x + btn.width / 2, btn.y + btn.height / 2));
+      });
+      
+      // Mode buttons (1234 buttons) - apply blink effect
+      state.modeButtons.forEach((btn) => {
+        drawButtonWithBlink(btn, state.currentMode === btn.mode, blinkOpacity, () => {
+          textSize(20 * state.globalScale);
+          text(btn.label, btn.x + btn.width / 2, btn.y + btn.height / 2 - 10 * state.globalScale);
+          
+          if (btn.maxMinutes !== undefined) {
+            textSize(11 * state.globalScale);
+            fill(state.currentMode === btn.mode ? 0 : 180);
+            text(`0-${btn.maxMinutes}m`, btn.x + btn.width / 2, btn.y + btn.height / 2 + 8 * state.globalScale);
+          }
+        });
+      });
+      
+      // Action buttons (cancel and start) - apply blink effect
+      state.actionButtons.forEach((btn) => {
+        const isStartButton = btn.action === "start";
+        const isDisabled = isStartButton && state.sliderValue <= 0.001;
+        const isActive = isStartButton && state.isTimerRunning;
+        
+        drawButtonWithBlink(btn, isActive, blinkOpacity, () => {
+          const label = isStartButton ? (state.isTimerRunning ? "停止" : "开始") : btn.label;
+          fill(isDisabled ? 100 : 255);
+          textSize(20 * state.globalScale);
+          text(label, btn.x + btn.width / 2, btn.y + btn.height / 2);
+        }, isDisabled);
+      });
+    }
+
+    function drawButton(btn, isActive, drawContent, isDisabled = false) {
+      const isHovered = mouseX >= btn.x && mouseX <= btn.x + btn.width &&
+                       mouseY >= btn.y && mouseY <= btn.y + btn.height;
+      
+      if (isDisabled) {
+        fill(255, 255 * 0.05);
+        stroke(255, 255 * 0.2);
+        strokeWeight(1);
+      } else if (isActive) {
+            fill(255);
+            stroke(255);
+        strokeWeight(2);
+          } else if (isHovered) {
+            fill(255, 255 * 0.3);
+            stroke(255, 255 * 0.8);
+            strokeWeight(1);
+          } else {
+            fill(255, 255 * 0.15);
+            stroke(255, 255 * 0.5);
+            strokeWeight(1);
+          }
+      
+          rect(btn.x, btn.y, btn.width, btn.height, 6);
+
+      fill(isActive && !isDisabled ? 0 : 255);
+          noStroke();
+          textAlign(CENTER, CENTER);
+      drawContent();
+        }
+
+    function drawInstructions() {
+        fill(255, 255 * 0.4);
+        noStroke();
+        textAlign(CENTER, CENTER);
+      textSize(10 * state.globalScale);
+      text("Drag line • 1-3: speed • Q-R: time ranges • Space: start/stop • Esc: reset • S: save",
+           width / 2, height - 20 * state.globalScale);
+    }
+
+    function draw7SegmentSimple(digit, x, y, opacityMultiplier = 1) {
+      const patterns = [
+        [1,1,1,0,1,1,1], [0,0,1,0,0,1,0], [1,0,1,1,1,0,1], [1,0,1,1,0,1,1],
+        [0,1,1,1,0,1,0], [1,1,0,1,0,1,1], [1,1,0,1,1,1,1], [1,0,1,0,0,1,0],
+        [1,1,1,1,1,1,1], [1,1,1,1,0,1,1]
+      ];
+      
+      const pattern = patterns[digit];
+      const w = width * 0.021;
+      const h = width * 0.002;
+      const segHeight = width * 0.043;
+
+        noStroke();
+      const segments = [
+        { on: pattern[0], x: x + w * 0.07, y: y, w: w * 0.87, h: h },
+        { on: pattern[1], x: x, y: y + h * 0.67, w: h, h: segHeight * 0.47 },
+        { on: pattern[2], x: x + w - h, y: y + h * 0.67, w: h, h: segHeight * 0.47 },
+        { on: pattern[3], x: x + w * 0.07, y: y + segHeight * 0.5 - h * 0.5, w: w * 0.87, h: h },
+        { on: pattern[4], x: x, y: y + segHeight * 0.5 + h * 0.67, w: h, h: segHeight * 0.47 },
+        { on: pattern[5], x: x + w - h, y: y + segHeight * 0.5 + h * 0.67, w: h, h: segHeight * 0.47 },
+        { on: pattern[6], x: x + w * 0.07, y: y + segHeight - h, w: w * 0.87, h: h }
+      ];
+      
+      segments.forEach(seg => {
+        const opacity = (seg.on ? 255 : 60) * opacityMultiplier;
+        fill(255, opacity);
+        rect(seg.x, seg.y, seg.w, seg.h);
+      });
+    }
+
+    function drawBottomGlow() {
+      const time = millis() * 0.0005;
+      const easedTransition = state.glowTransition * state.glowTransition * (3 - 2 * state.glowTransition);
+      
+      let burst = 0;
+      if (state.isTimerRunning && state.timerStartTime > 0) {
+        const timeSinceStart = millis() - state.timerStartTime;
+        if (timeSinceStart < 500 && timeSinceStart >= 0) {
+          burst = sin((timeSinceStart / 500) * PI) * 0.2;
+        }
+      }
+      
+      // Draw glow layers
+      for (let layer = 0; layer < 12; layer++) {
+        push();
+        drawingContext.globalCompositeOperation = "screen";
+        
+        const layerTime = time + layer * 0.12;
+        const pulse = sin(layerTime * 1.8) * 0.15 + 0.85;
+        const col = CONFIG.colors.glowColors[layer % CONFIG.colors.glowColors.length];
+        const intensity = pulse * 0.18 * easedTransition * (1 + burst);
+        
+        drawGlowGradient(col, intensity, layerTime, layer, easedTransition, burst);
+        pop();
+      }
+      
+      drawGlowEffects(time, easedTransition, burst);
+    }
+
+    function drawGlowGradient(col, intensity, layerTime, layer, easedTransition, burst) {
+      const gradient = drawingContext.createLinearGradient(0, height, 0, height * 0.75);
+      gradient.addColorStop(0, `rgba(${col[0]}, ${col[1]}, ${col[2]}, ${intensity})`);
+      gradient.addColorStop(0.2, `rgba(${col[0]}, ${col[1]}, ${col[2]}, ${intensity * 0.7})`);
+      gradient.addColorStop(0.4, `rgba(${col[0]}, ${col[1]}, ${col[2]}, ${intensity * 0.4})`);
+      gradient.addColorStop(0.7, `rgba(${col[0]}, ${col[1]}, ${col[2]}, ${intensity * 0.1})`);
+      gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
+      
+      drawingContext.fillStyle = gradient;
+      const waveMultiplier = easedTransition * (1 + burst * 2);
+      
+      drawingContext.beginPath();
+      drawingContext.moveTo(0, height);
+      
+      for (let x = 0; x <= width; x += width / 50) {
+        const wave1 = sin((x / width) * PI * 4 + layerTime * 2.5) * 20 * state.globalScale * waveMultiplier;
+        const wave2 = sin((x / width) * PI * 2 + layerTime * 1.8 + layer) * 15 * state.globalScale * waveMultiplier;
+        const wave3 = sin((x / width) * PI * 6 + layerTime * 3.2) * 8 * state.globalScale * waveMultiplier;
+        const baseY = lerp(height * 0.98, height * 0.9, easedTransition);
+        const y = baseY + wave1 + wave2 * 0.5 + wave3 * 0.3;
+        drawingContext.lineTo(x, y);
+      }
+      
+      drawingContext.lineTo(width, height);
+      drawingContext.closePath();
+      drawingContext.fill();
+    }
+
+    function drawGlowEffects(time, easedTransition, burst) {
+      push();
+      drawingContext.globalCompositeOperation = "screen";
+      
+      // Radial glows
+      for (let i = 0; i < 4; i++) {
+        const glowX = width * (0.15 + i * 0.25);
+        const glowTime = time + i * 0.6;
+        const gradient = drawingContext.createRadialGradient(
+          glowX + sin(glowTime * 1.2) * 60 * state.globalScale * easedTransition,
+          height, 0, glowX, height,
+          width * 0.4 * (0.3 + 0.7 * easedTransition + burst * 0.3)
+        );
+        
+        const glowPulse = sin(glowTime * 2) * 0.15 + 0.85;
+        const glowIntensity = glowPulse * (1 + burst * 0.5);
+        gradient.addColorStop(0, `rgba(255, 170, 80, ${glowIntensity * 0.2 * easedTransition})`);
+        gradient.addColorStop(0.2, `rgba(255, 160, 70, ${glowIntensity * 0.12 * easedTransition})`);
+        gradient.addColorStop(0.5, `rgba(255, 150, 60, ${glowIntensity * 0.06 * easedTransition})`);
+        gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
+        
+        drawingContext.fillStyle = gradient;
+        drawingContext.fillRect(0, height * 0.85, width, height * 0.15);
+      }
+      
+      pop();
+    }
+
+    // Event handlers
+    function handleModeChange(mode, maxMinutes, targetValue) {
+      state.currentMode = mode;
+      state.currentMaxMinutes = maxMinutes;
+      state.targetTime = targetValue;
+      state.sliderValue = 0;
+      state.animatingToTarget = true;
+      state.isTimerRunning = false;
+    }
+
+    function handleSpeedChange(speedIndex) {
+      state.currentSpeed = speedIndex;
+    }
+
+    function handleActionButton(action) {
+      if (action === "start" && state.sliderValue > 0.001) {
+        state.isTimerRunning = !state.isTimerRunning;
+        if (state.isTimerRunning) {
+          state.animatingToTarget = false;
+          state.timerStartTime = millis();
+        }
+      } else if (action === "cancel") {
+        state.sliderValue = 0;
+        state.isTimerRunning = false;
+        state.currentMode = 0; // Back to default state - no button selected
+        state.currentMaxMinutes = 10; // Back to default 10 minute range
+        state.animatingToTarget = false;
+      }
+    }
+
+    function handleDrag(inputX) {
+      const deltaX = inputX - state.lastInputX;
+      const sensitivity = CONFIG.speeds.values[state.currentSpeed];
+      state.sliderValue = constrain(state.sliderValue + deltaX * sensitivity, 0, 1);
+      state.lastInputX = inputX;
+      state.animatingToTarget = false;
+    }
+
+    // p5.js event handlers
+    function mousePressed() {
+      // Stop startup animation on any interaction
+      if (state.startupAnimation.isActive) {
+        state.startupAnimation.isActive = false;
+        state.glowTransition = 0; // Reset glow
+      }
+      
+      const point = { x: mouseX, y: mouseY };
+      
+      // Check buttons
+      for (let btn of state.actionButtons) {
+        if (isPointInButton(point, btn)) {
+          handleActionButton(btn.action);
+          return;
+        }
+      }
+      
+      for (let btn of state.modeButtons) {
+        if (isPointInButton(point, btn)) {
+          handleModeChange(btn.mode, btn.maxMinutes, btn.targetValue);
+          return;
+        }
+      }
+      
+      for (let i = 0; i < state.speedButtons.length; i++) {
+        if (isPointInButton(point, state.speedButtons[i])) {
+          handleSpeedChange(i);
+          return;
+        }
+      }
+      
+      // Check slider
+      if (isPointInSlider(point)) {
+        state.isDragging = true;
+        state.lastInputX = mouseX;
+        state.isTimerRunning = false;
+      }
+    }
+
+    function mouseReleased() {
+      state.isDragging = false;
+    }
+
+    function mouseDragged() {
+      if (state.isDragging) {
+        handleDrag(mouseX);
+      }
+    }
+
+    function touchStarted() {
+      if (touches && touches.length > 0) {
+        const point = { x: touches[0].x, y: touches[0].y };
+        mousePressed.call(this, point);
+            return false;
+        }
+      }
+
+      function touchEnded() {
+      state.isDragging = false;
+        return false;
+      }
+
+      function touchMoved() {
+      if (state.isDragging && touches && touches.length > 0) {
+        handleDrag(touches[0].x);
+          return false;
+        }
+      }
+
+      function keyPressed() {
+      // Stop startup animation on any interaction
+      if (state.startupAnimation.isActive) {
+        state.startupAnimation.isActive = false;
+        state.glowTransition = 0; // Reset glow
+      }
+      
+      const keyMap = {
+        's': () => save("microwave-ui.png"),
+        'S': () => save("microwave-ui.png"),
+        '1': () => handleSpeedChange(0),
+        '2': () => handleSpeedChange(1),
+        '3': () => handleSpeedChange(2),
+        'q': () => handleModeChange(1, 5, 0.2),
+        'Q': () => handleModeChange(1, 5, 0.2),
+        'w': () => handleModeChange(2, 8, 0.25),
+        'W': () => handleModeChange(2, 8, 0.25),
+        'e': () => handleModeChange(3, 15, 0.333),
+        'E': () => handleModeChange(3, 15, 0.333),
+        'r': () => handleModeChange(4, 30, 0.333),
+        'R': () => handleModeChange(4, 30, 0.333),
+        ' ': () => handleActionButton("start"),
+        'Escape': () => handleActionButton("cancel")
+      };
+      
+      if (keyMap[key]) {
+        keyMap[key]();
+      }
+    }
+
+    // Helper functions
+    function isPointInButton(point, button) {
+      return point.x >= button.x && point.x <= button.x + button.width &&
+             point.y >= button.y && point.y <= button.y + button.height;
+    }
+
+    function isPointInSlider(point) {
+      const hitHeight = state.sliderHeight / 2;
+      return point.x >= state.sliderX && point.x <= state.sliderX + state.sliderWidth &&
+             point.y >= state.sliderY - hitHeight && point.y <= state.sliderY + hitHeight;
+      }
+    </script>
+  </body>
+</html>
