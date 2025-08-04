@@ -107,8 +107,312 @@
         isActive: false,
         lastInteractionTime: 0,
         sleepDelay: 10000 // 10 seconds before entering sleep mode
+      },
+      
+      // WebSerial state
+      serial: {
+        port: null,
+        writer: null,
+        reader: null,
+        isConnected: false,
+        lastHeartbeat: 0,
+        heartbeatInterval: 10000, // 10 seconds (reduced frequency for better performance)
+        connectionButton: null,
+        statusIndicator: null
+      },
+      
+      // Hardware time tracking
+      hardwareTime: {
+        minutes: 0,
+        seconds: 0
+      },
+      
+      // Cache for time configuration (performance optimization)
+      timeConfigCache: null,
+      
+      // High-frequency data optimization
+      lastRenderTime: 0,
+      renderThrottleMs: 16, // ~60fps max rendering
+      pendingUpdate: false,
+      
+      // Message display state
+      messages: {
+        current: null,
+        startTime: 0,
+        duration: 3000, // 3 seconds
+        fadeTime: 500 // 0.5 seconds fade
       }
     };
+
+    // WebSerial Functions
+    async function connectSerial() {
+      if (!('serial' in navigator)) {
+        showMessage('浏览器不支持 WebSerial API', 'error');
+        return;
+      }
+
+      try {
+        // Request port
+        state.serial.port = await navigator.serial.requestPort();
+        await state.serial.port.open({ baudRate: 115200 });
+        
+        // Setup writer
+        const textEncoder = new TextEncoderStream();
+        const writableStreamClosed = textEncoder.readable.pipeTo(state.serial.port.writable);
+        state.serial.writer = textEncoder.writable.getWriter();
+        
+        // Setup reader
+        const textDecoder = new TextDecoderStream();
+        const readableStreamClosed = state.serial.port.readable.pipeTo(textDecoder.writable);
+        state.serial.reader = textDecoder.readable.getReader();
+        
+        state.serial.isConnected = true;
+        state.serial.lastHeartbeat = millis();
+        updateConnectionUI();
+        
+        // Start reading loop
+        readSerialLoop();
+        
+        showMessage('设备已连接', 'success');
+      } catch (error) {
+        console.error('连接失败:', error);
+        showMessage('连接失败: ' + error.message, 'error');
+        state.serial.isConnected = false;
+        updateConnectionUI();
+      }
+    }
+
+    async function disconnectSerial() {
+      if (state.serial.reader) {
+        await state.serial.reader.cancel();
+        state.serial.reader = null;
+      }
+      
+      if (state.serial.writer) {
+        await state.serial.writer.close();
+        state.serial.writer = null;
+      }
+      
+      if (state.serial.port) {
+        await state.serial.port.close();
+        state.serial.port = null;
+      }
+      
+      state.serial.isConnected = false;
+      updateConnectionUI();
+      showMessage('设备已断开', 'info');
+    }
+
+    async function readSerialLoop() {
+      let buffer = '';
+      
+      while (state.serial.isConnected && state.serial.reader) {
+        try {
+          const { value, done } = await state.serial.reader.read();
+          if (done) break;
+          
+          buffer += value;
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          
+          // Optimized for 100Hz: Process latest messages with throttling
+          const lineCount = lines.length;
+          if (lineCount > 0) {
+            // Process from newest to oldest, skip some messages to prevent lag
+            for (let i = lineCount - 1; i >= 0; i -= 2) { // Process every 2nd message
+              const line = lines[i];
+              if (line.length > 10) { // Minimum JSON length check
+                processSerialMessage(line);
+                break; // Only process one message per batch for 100Hz
+              }
+            }
+          }
+        } catch (error) {
+          console.error('读取错误:', error);
+          break;
+        }
+      }
+    }
+
+        function processSerialMessage(message) {
+      // Ultra-fast path for 100Hz time messages
+      if (message.charCodeAt(0) === 123) { // '{' character
+        // Quick string search for time pattern
+        const timeIndex = message.indexOf('"type":"time"');
+        if (timeIndex > 0) {
+          // Extract numbers directly for maximum speed
+          const minutesMatch = message.match(/"minutes":(\d+)/);
+          const secondsMatch = message.match(/"seconds":(\d+)/);
+          
+          if (minutesMatch && secondsMatch) {
+            state.serial.lastHeartbeat = millis();
+            updateTimeAndSliderFromHardware(
+              parseInt(minutesMatch[1]), 
+              parseInt(secondsMatch[1])
+            );
+            return;
+          }
+        }
+      }
+      
+      // General message parsing for other types
+      try {
+        const data = JSON.parse(message);
+        state.serial.lastHeartbeat = millis();
+        
+        switch (data.type) {
+          case 'ready':
+            showMessage('硬件已连接', 'success');
+            break;
+        }
+      } catch (error) {
+        // Silent fail for invalid JSON to reduce console spam
+      }
+    }
+
+        function updateTimeAndSliderFromHardware(minutes, seconds) {
+      // Store hardware time for display
+      state.hardwareTime.minutes = minutes;
+      state.hardwareTime.seconds = seconds;
+      
+      // Use cached config or calculate once
+      if (!state.timeConfigCache) {
+        const config = getTimeConfiguration();
+        state.timeConfigCache = {
+          maxTime: config.blockStart + (4 * config.blockIncrement)
+        };
+      }
+      
+      // Direct conversion: time → slider position (optimized)
+      const totalMinutes = minutes + seconds / 60;
+      state.sliderValue = constrain(totalMinutes / state.timeConfigCache.maxTime, 0, 1);
+      
+      // Stop any ongoing animations when hardware takes control
+      state.animatingToTarget = false;
+      state.isDragging = false;
+      
+      // Throttle rendering for high-frequency updates (100Hz → ~60fps)
+      const now = millis();
+      if (!state.pendingUpdate && now - state.lastRenderTime > state.renderThrottleMs) {
+        state.pendingUpdate = true;
+        requestAnimationFrame(() => {
+          state.lastRenderTime = millis();
+          state.pendingUpdate = false;
+          // Force immediate redraw for this frame
+        });
+      }
+    }
+
+    async function sendCommand(command) {
+      // Simplified: only send essential commands for feedback
+      if (!state.serial.isConnected || !state.serial.writer) {
+        return;
+      }
+      
+      try {
+        await state.serial.writer.write(command + '\n');
+      } catch (error) {
+        console.error('发送命令失败:', error);
+      }
+    }
+
+    let lastHeartbeatCheck = 0;
+    const HEARTBEAT_CHECK_INTERVAL = 1000; // Check every 1 second instead of every frame
+    
+    async function checkHeartbeat() {
+      if (!state.serial.isConnected) return;
+      
+      const now = millis();
+      if (now - lastHeartbeatCheck < HEARTBEAT_CHECK_INTERVAL) return;
+      
+      lastHeartbeatCheck = now;
+      if (now - state.serial.lastHeartbeat > state.serial.heartbeatInterval * 2) {
+        await disconnectSerial();
+      }
+    }
+    
+    // 测试功能：模拟硬件发送时间数据
+    function testHardwareControl() {
+      if (!state.serial.isConnected) {
+        showMessage('请先连接串口设备', 'error');
+        return;
+      }
+      
+      // 生成递增时间便于观察（每次增加1分钟）
+      if (!window.testMinutes) window.testMinutes = 0;
+      window.testMinutes = (window.testMinutes + 1) % 31; // 0-30分钟循环
+      
+      const minutes = window.testMinutes;
+      const seconds = 0;
+      
+
+      
+      // 直接调用时间更新函数
+      updateTimeAndSliderFromHardware(minutes, seconds);
+      
+      showMessage(`测试时间: ${minutes}:${String(seconds).padStart(2, '0')}`, 'info');
+    }
+
+    function updateConnectionUI() {
+      if (state.serial.connectionButton) {
+        state.serial.connectionButton.label = state.serial.isConnected ? '断开' : '连接';
+      }
+    }
+
+    function showMessage(message, type = 'info') {
+
+      
+      state.messages.current = {
+        text: message,
+        type: type
+      };
+      state.messages.startTime = millis();
+    }
+    
+    function drawMessage() {
+      if (!state.messages.current) return;
+      
+      const elapsed = millis() - state.messages.startTime;
+      if (elapsed > state.messages.duration + state.messages.fadeTime) {
+        state.messages.current = null;
+        return;
+      }
+      
+      // Calculate opacity
+      let opacity = 1;
+      if (elapsed > state.messages.duration) {
+        opacity = 1 - ((elapsed - state.messages.duration) / state.messages.fadeTime);
+      }
+      
+      // Message background color based on type
+      const colors = {
+        info: [100, 150, 255],
+        success: [100, 255, 100],
+        error: [255, 100, 100],
+        warning: [255, 200, 100]
+      };
+      
+      const color = colors[state.messages.current.type] || colors.info;
+      
+      // Draw message
+      push();
+      const msgWidth = textWidth(state.messages.current.text) + 40 * state.globalScale;
+      const msgHeight = 40 * state.globalScale;
+      const msgX = (width - msgWidth) / 2;
+      const msgY = height * 0.2;
+      
+      // Background
+      fill(color[0], color[1], color[2], 200 * opacity);
+      noStroke();
+      rect(msgX, msgY, msgWidth, msgHeight, 8);
+      
+      // Text
+      fill(255, 255 * opacity);
+      textAlign(CENTER, CENTER);
+      textSize(16 * state.globalScale);
+      text(state.messages.current.text, width / 2, msgY + msgHeight / 2);
+      pop();
+    }
 
     // Setup and window resize
     function setup() {
@@ -303,10 +607,7 @@
     function testLEDMapping() {
       const lineSegments = state.allSegments.filter(s => !s.isBlock);
       const blockSegments = state.allSegments.filter(s => s.isBlock);
-      console.log(`Total line segments: ${lineSegments.length}`);
-      console.log(`Total block segments: ${blockSegments.length}`);
-      console.log(`LEDs for line segments: ${CONFIG.leds.lineSegmentLEDs}`);
-      console.log(`LEDs for block segments: ${CONFIG.leds.blockSegmentLEDs}`);
+      
       
       // Test line segment mapping
       const lineLedMapping = {};
@@ -318,7 +619,7 @@
         lineLedMapping[ledIndex].push(lineIndex);
       });
       
-      console.log('Line LED Mapping:', lineLedMapping);
+
       
       // Test block segment mapping
       const blockLedMapping = {};
@@ -330,14 +631,14 @@
         blockLedMapping[ledIndex].push(blockIndex);
       });
       
-      console.log('Block LED Mapping:', blockLedMapping);
+
       
       // Check for gaps in line LEDs
       for (let i = 0; i < CONFIG.leds.lineSegmentLEDs; i++) {
         if (!lineLedMapping[i]) {
           console.warn(`Line LED ${i} has no segments assigned!`);
         } else {
-          console.log(`Line LED ${i}: ${lineLedMapping[i].length} segments`);
+  
         }
       }
       
@@ -346,7 +647,7 @@
         if (!blockLedMapping[i]) {
           console.warn(`Block LED ${i} has no segments assigned!`);
         } else {
-          console.log(`Block LED ${i}: ${blockLedMapping[i].length} segments`);
+  
         }
       }
     }
@@ -465,6 +766,21 @@
     function generateButtons() {
       const scale = state.globalScale;
       
+      // Serial connection button
+      const serialBtnWidth = 80 * scale;
+      const serialBtnHeight = 35 * scale;
+      const serialBtnX = width - serialBtnWidth - 20 * scale;
+      const serialBtnY = 45 * scale;
+      
+      state.serial.connectionButton = {
+        x: serialBtnX,
+        y: serialBtnY,
+        width: serialBtnWidth,
+        height: serialBtnHeight,
+        label: state.serial.isConnected ? '断开' : '连接',
+        action: 'serial'
+      };
+      
       // Speed buttons
       state.speedButtons = [];
       const speedBtnWidth = 65 * scale;
@@ -550,6 +866,9 @@
       function draw() {
       background(CONFIG.colors.bg);
       
+      // Check serial heartbeat (throttled)
+      checkHeartbeat();
+      
       // Handle startup animation
       if (state.startupAnimation.isActive) {
         updateHardwareStartupAnimation();
@@ -570,6 +889,7 @@
         drawButtons();
         drawInstructions();
         drawLEDDebugInfo(); // Call the new function here
+        drawMessage(); // Draw messages on top
       }
     }
 
@@ -1082,8 +1402,14 @@
     }
 
     function updateSleepMode() {
-      // Don't activate sleep mode during startup animation or before timer is initialized
-      if (state.startupAnimation.isActive || state.sleepMode.lastInteractionTime === 0) return;
+      // Don't activate sleep mode during startup animation, before timer is initialized, or when WebSerial is connected
+      if (state.startupAnimation.isActive || state.sleepMode.lastInteractionTime === 0 || state.serial.isConnected) {
+        // If WebSerial is connected, ensure sleep mode is disabled
+        if (state.serial.isConnected && state.sleepMode.isActive) {
+          state.sleepMode.isActive = false;
+        }
+        return;
+      }
       
       const currentTime = millis();
       const timeSinceLastInteraction = currentTime - state.sleepMode.lastInteractionTime;
@@ -1397,6 +1723,12 @@
     }
 
     function calculateTime() {
+      // When connected to hardware, use hardware time directly (fastest path)
+      if (state.serial.isConnected) {
+        return state.hardwareTime;
+      }
+      
+      // Otherwise, calculate from slider position as before
       const maxPosition = state.allSegments[state.allSegments.length - 1].position;
       const blockStartPosition = state.allSegments.find(s => s.isBlock)?.position || maxPosition * 0.8;
       const currentPathPosition = state.sliderValue * maxPosition;
@@ -1444,6 +1776,29 @@
     function drawButtons() {
       // Calculate blink opacity multiplier
       const blinkOpacity = (state.blinkAnimation.isActive && !state.blinkAnimation.isVisible) ? 0.1 : 1.0;
+      
+      // Serial connection button
+      if (state.serial.connectionButton) {
+        drawButton(state.serial.connectionButton, false, () => {
+          textSize(16 * state.globalScale);
+          text(state.serial.connectionButton.label, 
+               state.serial.connectionButton.x + state.serial.connectionButton.width / 2, 
+               state.serial.connectionButton.y + state.serial.connectionButton.height / 2);
+        });
+        
+        // Connection status indicator
+        const indicatorSize = 8 * state.globalScale;
+        const indicatorX = state.serial.connectionButton.x + state.serial.connectionButton.width - indicatorSize - 5 * state.globalScale;
+        const indicatorY = state.serial.connectionButton.y + 5 * state.globalScale;
+        
+        noStroke();
+        if (state.serial.isConnected) {
+          fill(0, 255, 0, 200); // Green for connected
+        } else {
+          fill(255, 0, 0, 200); // Red for disconnected
+        }
+        ellipse(indicatorX + indicatorSize/2, indicatorY + indicatorSize/2, indicatorSize, indicatorSize);
+      }
       
       // Speed buttons
       fill(255, 255 * 0.6);
@@ -1525,8 +1880,16 @@
       noStroke();
       textAlign(CENTER, CENTER);
       textSize(10 * state.globalScale);
-      text("Drag line • 1-3: speed • Q-R: time ranges • Space: start/stop • Esc: reset • S: save",
+      
+      if (state.serial.isConnected) {
+        // Show hardware control mode
+        text("硬件控制模式 • T: 测试时间同步 • C: 断开连接 • F12: 查看调试信息",
+             width / 2, height - 20 * state.globalScale);
+      } else {
+        // Show normal instructions
+        text("Drag line • 1-3: speed • Q-R: time ranges • Space: start/stop • Esc: reset • C: connect • S: save",
            width / 2, height - 20 * state.globalScale);
+      }
     }
 
     function drawLEDDebugInfo() {
@@ -1718,10 +2081,15 @@
     }
 
     function handleSpeedChange(speedIndex) {
+      // When connected, hardware controls everything
+      if (!state.serial.isConnected) {
       state.currentSpeed = speedIndex;
+      }
     }
 
     function handleActionButton(action) {
+      // When connected, hardware controls everything
+      if (!state.serial.isConnected) {
       if (action === "start" && state.sliderValue > 0.001) {
         state.isTimerRunning = !state.isTimerRunning;
         if (state.isTimerRunning) {
@@ -1734,15 +2102,19 @@
         state.currentMode = 0; // Back to default state - no button selected
         state.currentMaxMinutes = 7; // Back to default 7 minute range
         state.animatingToTarget = false;
+        }
       }
     }
 
     function handleDrag(inputX) {
+      // When connected, hardware controls the slider
+      if (!state.serial.isConnected) {
       const deltaX = inputX - state.lastInputX;
       const sensitivity = CONFIG.speeds.values[state.currentSpeed];
       state.sliderValue = constrain(state.sliderValue + deltaX * sensitivity, 0, 1);
       state.lastInputX = inputX;
       state.animatingToTarget = false;
+      }
     }
 
     // p5.js event handlers
@@ -1762,6 +2134,16 @@
       }
       
       const point = { x: mouseX, y: mouseY };
+      
+      // Check serial connection button
+      if (state.serial.connectionButton && isPointInButton(point, state.serial.connectionButton)) {
+        if (state.serial.isConnected) {
+          disconnectSerial();
+        } else {
+          connectSerial();
+        }
+        return;
+      }
       
       // Check buttons
       for (let btn of state.actionButtons) {
@@ -1785,8 +2167,8 @@
         }
       }
       
-      // Check slider
-      if (isPointInSlider(point)) {
+      // Check slider (only if not connected to hardware)
+      if (!state.serial.isConnected && isPointInSlider(point)) {
         state.isDragging = true;
         state.lastInputX = mouseX;
         state.isTimerRunning = false;
@@ -1855,7 +2237,11 @@
         'r': () => handleModeChange(4, 30, 0.333),
         'R': () => handleModeChange(4, 30, 0.333),
         ' ': () => handleActionButton("start"),
-        'Escape': () => handleActionButton("cancel")
+        'Escape': () => handleActionButton("cancel"),
+        'c': () => state.serial.isConnected ? disconnectSerial() : connectSerial(),
+        'C': () => state.serial.isConnected ? disconnectSerial() : connectSerial(),
+        't': () => testHardwareControl(), // 测试功能
+        'T': () => testHardwareControl()  // 测试功能
       };
       
       if (keyMap[key]) {
